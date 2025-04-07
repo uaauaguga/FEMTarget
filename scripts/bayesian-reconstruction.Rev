@@ -1,0 +1,61 @@
+data <- readContinuousCharacterData(args[1])
+tree <- readTrees(args[2])[1]
+
+moves    = VectorMoves()
+monitors = VectorMonitors()
+
+
+# init root score, hyperparameter is the root variance
+rootSignal ~ dnNormal(0,args[5])
+
+moves.append(mvSlide(rootSignal,delta=1,tune=true,weight=1.0))
+
+
+# init rate parameter: hyperparameter is signal rate and noise rate
+signalSigma2 ~ dnLognormal(ln(args[6]), args[7])
+moves.append( mvScale(signalSigma2, weight=1.0))
+
+numNodes = tree.nnodes()
+numTips = tree.ntips()
+# scores is a vector with scores of all nodes
+# assign root score
+signals[numNodes] := rootSignal
+
+# define the distribution of non-tip nodes
+for  (i in (numNodes-1):(numTips+1) ) {
+  # the Brownian motion
+  bl <- tree.branchLength(i) 
+  signals[i] ~ dnNormal( signals[tree.parent(i)], sd=sqrt(signalSigma2*bl) )  
+  moves.append(mvSlide( signals[i], delta=1, tune=true ,weight=1.0))
+}
+# ditribution of noise's variance
+noiseVariance ~ dnLognormal(ln(args[8]), args[9])
+moves.append(mvSlide(noiseVariance,delta=1,tune=true,weight=1.0))
+# define distribution of raw and reconstructed tip nodes
+for (i in numTips:1 ) {
+  # clamp tip score to the observation
+  bl <- tree.branchLength(i)
+  signals[i] ~ dnNormal( signals[tree.parent(i)], sd=sqrt(signalSigma2*bl))
+  moves.append(mvSlide( signals[i], delta=1, tune=true ,weight=1.0))
+  # the observation = signal + noise
+  # for a given node, assume signal and noise are independent
+  observations[i] ~ dnNormal(signals[i], sd=sqrt(noiseVariance))
+  observations[i].clamp(data.getTaxon(tree.nodeName(i))[1])
+  #write(tree.nodeName(i),i,data.getTaxon(tree.nodeName(i))[1],"\n",file=args[4],append=TRUE)
+}
+
+print("write tree ...")
+write(tree,file=args[4])
+print("finished")
+
+mymodel = model(signalSigma2)
+
+monitors.append( mnScreen(printgen=100, signalSigma2, rootSignal, signals))
+monitors.append( mnModel(filename=args[3], printgen=10))
+
+mymcmc = mcmc(mymodel, monitors, moves, nruns=args[10], combine="mixed")
+
+mymcmc.burnin( generations = 1000, tuningInterval = 200)
+mymcmc.run(generations=args[11])
+
+quit()
